@@ -1,0 +1,20 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    env_file: .env
+    volumes:
+      - ./local_data:/app/local_data          # bi.db + uploads
+      - ./src/static/reports:/app/src/static/reports  # generated dashboards
+    restart: unless-stopped
+
+  # One-off ingestion — run with: docker compose run --rm ingest
+  ingest:
+    build: .
+    env_file: .env
+    volumes:
+      - ./local_data:/app/local_data
+    entrypoint: ["python", "scripts/prepare_bi_data.py"]
+    profiles:
+      - tools

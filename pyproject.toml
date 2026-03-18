@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "llm-bi-chat-agentic"
+version = "0.1.0"
+description = "Agentic conversational BI powered by LLMs and DuckDB"
+authors = []
+readme = "README.md"
+packages = [
+    {include = "sql", from = "src"},
+    {include = "agents", from = "src"},
+    {include = "services", from = "src"},
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+duckdb = "*"
+streamlit = "*"
+anthropic = "*"
+watchdog = "^6.0.0"
+python-dotenv = "^1.2.2"
+openai = "^2.28.0"
+polars = "^1.39.0"
+mcp = "^1.26.0"
+plotly = "^6.6.0"
+altair = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
