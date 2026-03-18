@@ -1,301 +1,263 @@
-# LLM BI Chat — Agentic Architecture
+# LLM BI Chat — LangGraph Architecture
 
-A conversational Business Intelligence app where users ask questions about order data in plain English. An **LLM-powered orchestrator** classifies intent and routes to specialist agents that write SQL, execute queries, and generate interactive dashboards — all without hardcoded rules.
+A conversational Business Intelligence app being migrated from a hand-built orchestrator to **LangGraph** — a framework for building stateful, multi-agent AI applications. Users ask questions about order data in plain English. Agents write SQL, execute queries, and generate interactive charts and dashboards.
+
+> **Starting point:** [`llm-bi-chat-agentic`](https://github.com/suryapatnaik1/llm-bi-chat-agentic) — the working version with a custom orchestrator.
+> **Goal:** Replace the custom orchestration layer with LangGraph's `StateGraph` while keeping all agent capabilities.
 
 ---
 
-## Architecture
+## Why LangGraph?
+
+### The Restaurant Analogy
+
+Imagine your BI app is a restaurant:
+
+| Restaurant | This App |
+|------------|----------|
+| Customer at the door | User's question in chat |
+| Host who directs customers | OrchestratorAgent (routes to the right agent) |
+| Waiter who looks things up | QueryAgent (writes and runs SQL) |
+| Artist who draws the menu | VisualizationAgent (generates dashboards) |
+| Chef who customises a dish | ChartAgent (asks clarifying questions, builds chart) |
+| Kitchen | DuckDB database (via MCP) |
+| Post-it notes on the wall | `st.session_state` (current state management) |
+| Head restaurant manager | **LangGraph** (the new part) |
+
+Right now, **the code plays the role of manager, host, AND kitchen designer** — all hand-built. LangGraph lets the code focus on making each specialist better at their job, while the framework handles the management.
+
+---
+
+## What's Wrong With the Hand-Built Approach?
+
+The current `llm-bi-chat-agentic` works well, but has four pain points that grow over time:
+
+### 1. State is scattered Post-it notes
+
+```python
+# Current approach — fragile nested dicts in session state
+st.session_state.chart_pending = {
+    "df_json": ...,
+    "original_question": ...,
+    "last_sql": ...,
+    "phase": "ask_plot" | "charting",
+    "history": [...]
+}
+```
+
+If the app crashes, all state is lost. Adding a new field to the state means hunting down every place that reads or writes it.
+
+### 2. The routing logic is a long if/elif chain
+
+```python
+# Current approach — grows with every new capability
+if chart_conv and chart_conv["phase"] == "ask_plot":
+    ...
+elif chart_conv and chart_conv["phase"] == "charting":
+    ...
+elif intent == "reformat" and last_df_msg:
+    ...
+else:
+    # regular query
+```
+
+Every new agent or phase means editing this chain.
+
+### 3. Human-in-the-loop is awkward
+
+The ChartAgent needs to **pause and wait for the user** mid-conversation. The current implementation simulates this by setting `phase: "ask_plot"` and returning early — the graph of "who talks next" lives entirely in if/elif logic across 500 lines of `app.py`.
+
+### 4. No visibility into what happened
+
+When something goes wrong, you add print statements and read logs. There's no visual representation of the execution path.
+
+---
+
+## LangGraph: The Five Big Wins
+
+### 1. Draw the map instead of writing the directions
+
+Instead of writing code that says "if this then go there, else go here", you **declare a graph**:
+
+```python
+graph = StateGraph(BIState)
+
+graph.add_node("router", router_node)
+graph.add_node("query_agent", query_agent_node)
+graph.add_node("visualization_agent", visualization_agent_node)
+graph.add_node("chart_agent", chart_agent_node)
+
+graph.add_conditional_edges("router", classify_intent, {
+    "query":         "query_agent",
+    "visualization": "visualization_agent",
+    "chart":         "chart_agent",
+})
+graph.add_edge("query_agent", END)
+graph.add_conditional_edges("chart_agent", has_chart_spec, {
+    "yes": "render_chart",
+    "no":  END,           # interrupt — wait for user
+})
+```
+
+The routing logic lives in the graph structure, not buried in if/elif chains.
+
+### 2. One State object, automatically saved
+
+```python
+class BIState(MessagesState):
+    """Everything the graph needs — one place, typed, checkpointed."""
+    df_json:        str | None = None
+    last_sql:       str | None = None
+    chart_spec:     dict | None = None
+    dashboard_html: str | None = None
+    chart_history:  list = []
+```
+
+All agents read from and write to this single state. LangGraph checkpoints it automatically — if the app restarts, the conversation resumes exactly where it left off.
+
+### 3. Human-in-the-loop is a first-class concept
+
+When the ChartAgent needs to ask the user a question (e.g., _"What would you like on the axes?"_), LangGraph's `interrupt` pauses the entire graph and waits:
+
+```python
+# Inside chart_agent_node — the graph pauses here automatically
+user_answer = interrupt("What would you like on the axes?")
+```
+
+No more phase flags, no more checking `chart_pending["phase"]` in a 100-line if/elif block.
+
+### 4. Retry and error handling built in
+
+```python
+# Automatic retry with backoff — no try/except everywhere
+graph.add_node("query_agent", query_agent_node, retry=RetryPolicy(max_attempts=3))
+```
+
+### 5. Visual debugging with LangGraph Studio
+
+LangGraph Studio shows the graph as a live map — green nodes for completed steps, red for errors, yellow for waiting. No more print statements.
+
+---
+
+## Target Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Streamlit UI (app.py)                     │
-│  Chat input ─► filters ─► message history ─► render result  │
 │                                                             │
-│  Two rendering paths:                                       │
-│    1. Query results → Plotly charts inline in chat          │
-│    2. Dashboard reports → saved to disk, opened via button  │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ question + filter context
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│              OrchestratorAgent (orchestrator.py)             │
-│                                                             │
-│  Single Claude call with specialist agents exposed as tools │
-│  Claude picks the right agent via tool_use — no keywords,   │
-│  no regex, no if/else chains                                │
-└────────────┬───────────────────────────┬────────────────────┘
-             │                           │
-             ▼                           ▼
-┌────────────────────────┐  ┌────────────────────────────────┐
-│  QueryAgent            │  │  VisualizationAgent            │
-│  (query_agent.py)      │  │  (visualization_agent.py)      │
-│                        │  │                                │
-│  Text-to-SQL specialist│  │  Standard BI report specialist │
-│  Writes DuckDB SQL,    │  │  Generates dashboard-data JSON │
-│  executes via MCP,     │  │  with KPIs + Chart.js configs, │
-│  returns text + DF     │  │  renders to _DASHBOARD_TEMPLATE│
-└────────────┬───────────┘  └──────────────┬─────────────────┘
-             │                             │
-             ▼                             ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  Shared Agent Loop (base.py)                 │
-│                                                             │
-│  run_tool_loop(): Claude ↔ MCP execute_sql, repeat until    │
-│  Claude returns end_turn. Returns (text, last_sql).         │
+│  Sends user message → graph.invoke()                        │
+│  Renders graph state (text, charts, dashboards)             │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              DuckDB MCP Server (duckdb_mcp_server.py)        │
+│              LangGraph StateGraph (graph.py)                 │
 │                                                             │
-│  Subprocess over stdio  │  Tools: get_schema, execute_sql   │
-│  Read-only SELECT only  │  Returns markdown tables          │
-└─────────────────────────┴───────────────────────────────────┘
+│  BIState = { messages, df_json, last_sql,                   │
+│              chart_spec, dashboard_html, chart_history }    │
+│                                                             │
+│  ┌──────────┐                                               │
+│  │  Router  │  (Claude classifies intent)                   │
+│  └────┬─────┘                                               │
+│       │                                                     │
+│  ┌────┼──────────────┐                                      │
+│  ▼    ▼              ▼                                      │
+│ Query Visual       Chart ◄──── asks questions               │
+│ Agent Agent        Agent       until ready                  │
+│  │    │            │  ↑                                     │
+│  │    │            ▼  │                                     │
+│  │    │         Has chart-spec?                             │
+│  │    │         No → interrupt()  ← user answers            │
+│  │    │         Yes → Render Chart                          │
+│  ▼    ▼              ▼                                      │
+│  └────┴──────────────┘                                      │
+│               │                                             │
+│             END                                             │
+└──────────────────────────┬──────────────────────────────────┘
                            │
-                           ▼
-                    ┌──────────────┐
-                    │  DuckDB      │
-                    │  local_data/ │
-                    │  bi.db       │
-                    └──────────────┘
+                    ┌──────┴──────┐
+                    │  MCP Layer  │
+                    │  (DuckDB)   │
+                    └─────────────┘
 ```
 
-## How the Agentic Routing Works
+---
 
-Traditional BI apps use keyword matching or regex to decide what to do with a user's question. This app uses **Claude itself as the router**.
+## Comparison: Custom Orchestrator vs LangGraph
 
-### The Orchestrator Pattern
+| Capability | `llm-bi-chat-agentic` (custom) | `llm-bi-chat-langgraph` (target) |
+|------------|-------------------------------|----------------------------------|
+| **Routing** | Claude tool_use + if/elif chain in app.py | Conditional edges in StateGraph |
+| **State** | `st.session_state` dicts with phases | Typed `BIState`, auto-checkpointed |
+| **Human-in-the-loop** | Phase flags + early return + resume logic | `interrupt()` — one line |
+| **Error handling** | try/except in every agent | Node-level `RetryPolicy` |
+| **Multi-turn chat** | Manual history lists in state | `MessagesState` — built in |
+| **Adding a new agent** | Write agent + edit app.py routing | Add node + draw edge |
+| **Visibility** | Logs + print statements | LangGraph Studio visual debugger |
+| **State persistence** | Lost on restart | Checkpointed to DB |
+| **Streaming** | Manual `st.write_stream` | Native graph streaming |
 
-1. **User asks**: _"What were our top 5 products last month?"_
-2. **OrchestratorAgent** makes a **single Claude API call** with specialist agents registered as tools:
-   ```
-   tools: [
-     { name: "query_agent",         description: "Answer factual questions..." },
-     { name: "visualization_agent", description: "Create full BI reports/dashboards..." }
-   ]
-   ```
-3. **Claude classifies intent** and returns a `tool_use` block:
-   ```json
-   { "type": "tool_use", "name": "query_agent", "input": { "question": "..." } }
-   ```
-4. **Orchestrator dispatches** to the selected agent's `run()` method
-5. **Agent executes** its own Claude loop with `execute_sql` MCP tools
-6. **Result flows back** to the UI as a structured `AgentResult`
+---
 
-This means:
-- _"Show me total revenue"_ → `query_agent` (factual data lookup → text + DataFrame)
-- _"Give me a dashboard of sales by channel"_ → `visualization_agent` (standard report with KPIs + charts)
-- _"What does our revenue look like over time?"_ → Claude decides based on nuance, not keywords
+## What Stays the Same
 
-### The Agent Loop
+LangGraph replaces the **orchestration layer** only. The specialist agents, MCP connection, and database layer are unchanged:
 
-Each specialist agent uses a shared `run_tool_loop()` that implements the standard Claude tool-use cycle:
+| Component | Changes? | Notes |
+|-----------|----------|-------|
+| `QueryAgent` | ✅ Kept | Becomes a LangGraph node |
+| `VisualizationAgent` | ✅ Kept | Becomes a LangGraph node |
+| `ChartAgent` | ✅ Kept | Uses `interrupt()` instead of phase flags |
+| `run_tool_loop()` | ✅ Kept | Still used inside agent nodes |
+| DuckDB MCP Server | ✅ Kept | Unchanged |
+| `_DASHBOARD_TEMPLATE` | ✅ Kept | Unchanged |
+| `MCPConnectionManager` | ✅ Kept | Unchanged |
+| `OrchestratorAgent` | ❌ Replaced | Becomes the router node + conditional edges |
+| `st.session_state` routing logic | ❌ Replaced | Becomes graph state + edge conditions |
+| Phase flags in app.py | ❌ Replaced | Becomes `interrupt()` in ChartAgent node |
 
-```
-Claude call (system prompt + tools + messages)
-    │
-    ├─ stop_reason: "tool_use" → execute MCP tool → track last_sql → append result → loop
-    │
-    └─ stop_reason: "end_turn" → return (final_text, last_sql)
-```
+---
 
-This allows agents to make **multiple SQL calls** in a single conversation turn — e.g., the visualization agent might run 4-5 queries to gather data for different dashboard charts before composing the final response.
+## Migration Plan
 
-The `last_sql` tracking is critical: QueryAgent re-executes the final SQL against DuckDB to obtain a Polars DataFrame, which the UI then uses for interactive Plotly charting.
+### Phase 1 — Define the state and graph skeleton
+- Create `src/graph/state.py` — `BIState(MessagesState)`
+- Create `src/graph/graph.py` — `StateGraph` with nodes and edges
+- Wire existing agents as node functions
 
-## Two Rendering Paths
+### Phase 2 — Replace the orchestrator
+- Remove `OrchestratorAgent` and `AgentRegistry`
+- Add router node (same Claude call, now returns edge name)
+- Add conditional edges for routing
 
-The app has two distinct ways to display data, matching the approach in [`llm-bi-chat`](../llm-bi-chat):
+### Phase 3 — Replace state machine with interrupt
+- Remove `chart_pending` phases from `st.session_state`
+- ChartAgent node uses `interrupt()` to pause and wait for user
+- Graph resumes from checkpoint on next user message
 
-### Path 1: LLM-Driven Conversational Charts (QueryAgent → ChartAgent)
+### Phase 4 — Update the UI
+- `app.py` calls `graph.invoke()` instead of `orchestrator.query()`
+- UI reads from `BIState` instead of `result.data`, `result.text` etc.
+- Add LangGraph streaming for real-time response rendering
 
-When the QueryAgent returns a DataFrame, the UI offers to plot it. If the user says yes, the **ChartAgent** — a separate multi-turn LLM conversation — takes over. Unlike a fixed state machine, the ChartAgent **decides what to ask** based on context:
+### Phase 5 — Add persistence
+- Configure checkpointer (SQLite or PostgreSQL)
+- Conversations survive restarts
+- Multiple users get isolated graph instances via `thread_id`
 
-```
-User: "show me net sales by channel"
-  │
-  ▼
-QueryAgent → text answer + DataFrame
-  │
-  ▼
-App: "Would you like me to plot this data?"
-  │
-  ▼ (user says "yes")
-ChartAgent receives: DataFrame schema + original question + conversation history
-  │
-  ├─ If specific enough → returns chart-spec immediately (0 questions)
-  │
-  └─ If ambiguous → asks ONE clarifying question at a time:
-       "What would you like on the axes? e.g., revenue over time, or sales by region"
-       "A bar chart would work well. Do you want monthly or yearly aggregation?"
-       "Would you like to compare with another metric?"
-       │
-       ▼ (when ready)
-  ChartAgent returns ```chart-spec``` JSON → Plotly chart rendered inline
-```
-
-**Key details:**
-- **Adaptive questions**: the LLM evaluates what's known vs missing — asks 0-3 questions depending on clarity
-- Uses **Plotly Express** for all chart types (bar, line, pie, scatter, area, histogram)
-- Charts render **inline in the chat** — no external pages or links
-- Supports **reformat intent**: _"show that as a bar chart"_ → ChartAgent gets the previous DataFrame and returns a new chart-spec immediately
-- **No hardcoded step order**: the LLM picks questions based on the data (e.g., asks about time aggregation only when date columns exist)
-
-**Chart-spec format** (returned by ChartAgent when ready):
-```json
-{
-  "chart_type": "bar",
-  "title": "Monthly Net Sales by Channel",
-  "x": "channel",
-  "y": "net_sales",
-  "color": null
-}
-```
-
-**Session state** (`chart_pending`):
-```
-phase: "ask_plot"  → waiting for yes/no
-phase: "charting"  → active ChartAgent conversation (multi-turn LLM with history)
-```
-
-### Path 2: Standard BI Reports (VisualizationAgent)
-
-When the VisualizationAgent is selected, it generates a **full standard report** with KPIs and multiple charts:
-
-```
-User: "give me an overview of sales performance"
-  │
-  ▼
-VisualizationAgent → runs 4-5 SQL queries via MCP
-  │
-  ▼
-Claude returns ```dashboard-data JSON block
-  │
-  ▼
-parse_dashboard_response() → extract JSON via regex
-  │
-  ▼
-render_dashboard() → inject into _DASHBOARD_TEMPLATE
-  │
-  ▼
-save_report() → src/static/reports/report_<timestamp>.html
-  │
-  ▼
-Summary text displayed in chat (no inline HTML, no "Open report" link)
-Dashboard button (top-right) opens the latest report in a new tab
-```
-
-**The dashboard is never shown inline in chat** — it's a full HTML page with Chart.js, opened via the 📋 Dashboard button at the top-right corner of the app.
-
-## `_DASHBOARD_TEMPLATE`
-
-Uses the same `_DASHBOARD_TEMPLATE` approach as [`llm-bi-chat`](../llm-bi-chat) — a complete HTML/CSS/JS bundle in `dashboard_renderer.py` with placeholder tokens that get replaced at render time.
-
-### Template Structure
-
-Defined in `src/services/dashboard_renderer.py`, the template is a self-contained HTML page:
-
-- **Chart.js 4.4.0** embedded inline (no CDN dependency — works in Streamlit's sandboxed iframe)
-- **Inline CSS** — responsive grid for KPI cards and chart panels
-- **JavaScript renderer** — reads `__DASHBOARD_JSON__` at page load and dynamically creates:
-  - KPI cards with label, value, and change indicators (▲/▼)
-  - Chart.js canvases for `bar`, `pie`/`doughnut`, and `line` chart types
-- **Color palette** — 8-color scheme injected via `__PALETTE_JSON__` (indigo, emerald, amber, red, blue, purple, teal, orange)
-
-### Dashboard JSON Schema
-
-The `VisualizationAgent` system prompt instructs Claude to return exactly this structure inside a ` ```dashboard-data ` fenced block:
-
-```json
-{
-  "title": "Sales Overview",
-  "subtitle": "One-sentence description of the dashboard",
-  "kpis": [
-    { "label": "Total Revenue", "value": "£234,567", "change": "+12.3%", "up": true }
-  ],
-  "charts": [
-    { "title": "Revenue by Channel", "type": "bar", "data": { ... } },
-    { "title": "Category Mix", "type": "pie", "data": { ... } },
-    { "title": "Monthly Trend", "type": "line", "data": { ... } }
-  ]
-}
-```
-
-## Project Structure
-
-```
-src/
-  app.py                          # Streamlit UI — chat, filters, Plotly charts, dashboard button
-  config.py                       # API keys, model, paths (single source of truth)
-  agents/
-    base.py                       # AgentResult dataclass + BaseAgent ABC + run_tool_loop()
-    orchestrator.py               # LLM-based router via tool_use
-    query_agent.py                # Text-to-SQL specialist (returns text + DataFrame)
-    visualization_agent.py        # Standard BI report generation
-    chart_agent.py                # LLM-driven conversational chart builder (multi-turn)
-    registry.py                   # AgentRegistry — auto-generates orchestrator tools
-  services/
-    mcp_connection.py             # MCP subprocess lifecycle + schema caching
-    dashboard_renderer.py         # _DASHBOARD_TEMPLATE + report file management
-    schema_pruner.py              # 3-tier schema optimization
-  sql/
-    duckdb_mcp_server.py          # MCP server: get_schema + execute_sql tools
-scripts/
-  prepare_bi_data.py              # JSON → DuckDB ingestion
-local_data/
-  uploads/                        # Raw JSON data files
-  bi.db                           # DuckDB database (generated)
-```
-
-### Layer Responsibilities
-
-| Layer | Files | Does | Does NOT |
-|-------|-------|------|----------|
-| **UI** | `app.py` | Render chat, manage filters, Plotly charts inline, dashboard button, route to ChartAgent | Call MCP agents directly, write SQL, parse data |
-| **Orchestrator Agents** | `orchestrator.py`, `query_agent.py`, `visualization_agent.py` | Classify intent, write SQL prompts, interpret results, return DataFrames | Manage connections, render HTML, touch the filesystem |
-| **Chart Agent** | `chart_agent.py` | Multi-turn chart conversation, ask clarifying questions, return chart-spec JSON | Execute SQL, access MCP, render charts |
-| **Services** | `mcp_connection.py`, `dashboard_renderer.py`, `schema_pruner.py` | Manage MCP subprocess, render dashboard templates, optimize schemas | Make LLM calls, handle user input |
-| **Data** | `duckdb_mcp_server.py` | Execute read-only SQL, return schema DDL | Anything else |
-
-## Adding a New Agent
-
-The architecture is designed so adding a new capability is a 3-step process:
-
-**1. Create the agent** (`src/agents/my_agent.py`):
-```python
-from agents.base import AgentResult, BaseAgent, run_tool_loop
-
-class MyAgent(BaseAgent):
-    @property
-    def name(self) -> str:
-        return "my_agent"
-
-    @property
-    def description(self) -> str:
-        return "One-line description of what this agent does."
-
-    async def run(self, question, session, schema, context=None):
-        # Use run_tool_loop() with your own system prompt
-        ...
-        return AgentResult(text="...", agent_name=self.name)
-```
-
-**2. Register it** in `src/app.py`:
-```python
-registry.register(MyAgent())
-```
-
-**3. Done.** The orchestrator automatically sees the new agent as a tool and will route appropriate questions to it.
+---
 
 ## Data Model
 
-Three tables in DuckDB, ingested from JSON files:
+Three tables in DuckDB (unchanged from `llm-bi-chat-agentic`):
 
-| Table | Source | Key Columns |
-|-------|--------|-------------|
-| **orders** | `HeaderResults.json` | `original_reference`, `created_date`, `channel`, `net_sales`, `total_sales`, `gross_margin` |
-| **order_lines** | `LinesResults.json` | `original_reference` (FK), `style_code`, `name`, `net_sales`, `total_cost` |
-| **items** | `items.json` | `style_code` (FK), `category`, `sub_category` |
+| Table | Key Columns |
+|-------|-------------|
+| **orders** | `original_reference`, `created_date`, `channel`, `net_sales`, `total_sales`, `gross_margin` |
+| **order_lines** | `original_reference` (FK), `style_code`, `name`, `net_sales`, `total_cost` |
+| **items** | `style_code` (FK), `category`, `sub_category` |
+
+---
 
 ## Setup
 
@@ -304,131 +266,27 @@ Three tables in DuckDB, ingested from JSON files:
 - [Poetry](https://python-poetry.org/)
 - Anthropic API key
 
-### Local Development
+### Install
 
 ```bash
-# Install dependencies
+cd llm-bi-chat-langgraph
 poetry install
-
-# Set your API key
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
-
-# Ingest data (JSON → DuckDB)
 poetry run python scripts/prepare_bi_data.py
-
-# Run the app
 poetry run streamlit run src/app.py
 ```
 
-Open [http://localhost:8501](http://localhost:8501).
-
-### Docker
+### Add LangGraph dependency
 
 ```bash
-# Ingest data
-docker compose run --rm --profile tools ingest
-
-# Build and start
-docker compose up --build
+poetry add langgraph langchain-anthropic
 ```
 
-## Configuration
+---
 
-All configuration lives in `src/config.py`, driven by environment variables:
+## References
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | — | Required. Anthropic API key |
-| `LLM_MODEL` | `claude-sonnet-4-20250514` | Claude model ID |
-| `LLM_PROVIDER` | `anthropic` | `anthropic` or `openai` |
-
-## MCP — How the Database Connection Works
-
-The app uses the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) as the standardized interface between Claude and DuckDB. There are **two paths to the database**, each serving a different purpose.
-
-### Path 1: MCP (Claude ↔ DuckDB)
-
-MCP is the primary path for all agent SQL execution. The `duckdb_mcp_server.py` runs as a **stdio subprocess** exposing two tools:
-
-| MCP Tool | Purpose |
-|----------|---------|
-| `get_schema` | Returns `CREATE TABLE` DDL for all tables (fetched once, cached) |
-| `execute_sql` | Executes read-only `SELECT` queries, returns markdown tables |
-
-The execution flow:
-
-```
-Claude generates tool_use: execute_sql({ sql: "SELECT ..." })
-    ↓
-run_tool_loop() calls session.call_tool("execute_sql", { sql })
-    ↓
-MCP subprocess receives request over stdio
-    ↓
-duckdb_mcp_server.py executes query against bi.db
-    ↓
-Returns markdown table → fed back to Claude as tool_result
-    ↓
-Claude interprets results → generates next tool_use or end_turn
-```
-
-**Lifecycle**: A new MCP subprocess is spawned per `orchestrator.query()` call. Within that call, the same subprocess handles multiple `execute_sql` invocations (e.g., the VisualizationAgent may run 4–5 queries). The schema is cached in-memory across subprocess instances.
-
-### Path 2: Direct DuckDB (UI ↔ DuckDB)
-
-For charting, the app bypasses MCP and connects directly to DuckDB to get native Polars DataFrames:
-
-- **`QueryAgent._fetch_df()`** — re-executes `last_sql` locally after the MCP loop to get a DataFrame for Plotly
-- **`_execute_chart_sql()`** in `app.py` — executes SQL from `chart-spec` when the ChartAgent needs a different data shape (e.g., monthly aggregation)
-- **Sidebar filters** — `_get_channel_options()` and `get_date_bounds()` query DuckDB directly for filter values
-
-This avoids parsing MCP's markdown table format and is faster for getting structured data into Plotly.
-
-### Which components use which path?
-
-| Component | MCP | Direct DuckDB | Why |
-|-----------|-----|---------------|-----|
-| **OrchestratorAgent** | Schema + tool listing | — | Needs schema for agents, tool list for Claude |
-| **QueryAgent** | `execute_sql` via agent loop | `_fetch_df()` for DataFrame | MCP for Claude, direct for Plotly |
-| **VisualizationAgent** | `execute_sql` via agent loop | — | Dashboard data stays as text in Claude |
-| **ChartAgent** | — | `_execute_chart_sql()` | No MCP needed — just re-queries for chart data |
-| **Sidebar filters** | — | Direct queries | Simple lookups, no LLM involved |
-
-### MCP Server Configuration
-
-The MCP server is configured in `MCPConnectionManager` (`src/services/mcp_connection.py`):
-
-```python
-# Spawns as a subprocess over stdio
-server_params = StdioServerParameters(
-    command="python",
-    args=["src/sql/duckdb_mcp_server.py"],
-)
-```
-
-The connection manager handles:
-- Subprocess lifecycle (spawn/cleanup)
-- Schema caching (fetched once on first query)
-- Async/sync bridge (Streamlit is sync, MCP is async)
-- 120-second query timeout
-
-## Schema Pruning
-
-The `schema_pruner` service applies three optimization tiers before sending schema to agents:
-
-1. **Tier 1 — Table selection**: keyword hints determine which tables are relevant
-2. **Tier 2 — Column linking**: only columns matching question tokens are included
-3. **Tier 3 — Value annotation**: low-cardinality VARCHAR columns get inline value hints (e.g., `-- values: 'Shopify -UK', 'Amazon'`)
-
-This reduces token usage and improves SQL accuracy.
-
-## Tech Stack
-
-| Component | Purpose |
-|-----------|---------|
-| Streamlit | Chat UI + sidebar filters |
-| Claude (Anthropic) | LLM for routing, SQL generation, data interpretation, chart suggestions |
-| DuckDB | In-process SQL database (read-only) |
-| MCP | Standardized tool interface between Claude and DuckDB |
-| Plotly Express | Inline interactive charts in chat (bar, line, pie, scatter, area, histogram) |
-| Chart.js | Client-side charting in generated dashboard reports |
-| Polars | DataFrame handling between agents and UI |
+- [LangGraph documentation](https://langchain-ai.github.io/langgraph/)
+- [LangGraph human-in-the-loop](https://langchain-ai.github.io/langgraph/concepts/human_in_the_loop/)
+- [LangGraph Studio](https://github.com/langchain-ai/langgraph-studio)
+- Starting point: [`llm-bi-chat-agentic`](https://github.com/suryapatnaik1/llm-bi-chat-agentic)
