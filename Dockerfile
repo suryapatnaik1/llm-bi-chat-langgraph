@@ -15,8 +15,14 @@ COPY scripts/ scripts/
 COPY src/ src/
 COPY .streamlit/ .streamlit/
 
-# Pre-create directories that are mounted as volumes
-RUN mkdir -p local_data/uploads local_data/reports src/static/reports
+# Create a non-root user and hand ownership of the app directory to it.
+# Running as root inside a container is a HIGH-severity misconfiguration (DS-0002):
+# if the container is compromised, root inside maps to root on the host.
+RUN useradd --no-create-home --shell /bin/false appuser \
+    && mkdir -p local_data/uploads local_data/reports src/static/reports \
+    && chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8501
 

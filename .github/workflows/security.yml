@@ -1,0 +1,144 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run every Monday at 08:00 UTC to catch newly published CVEs
+    # even when the codebase hasn't changed.
+    - cron: "0 8 * * 1"
+  workflow_dispatch: # allow manual runs from the GitHub Actions UI
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # pip-audit — dependency CVE scan
+  # ---------------------------------------------------------------------------
+  # Parses poetry.lock and checks every locked package against the OSV and
+  # PyPI advisory databases. Fails the job if any HIGH or CRITICAL CVE is found.
+  # ---------------------------------------------------------------------------
+  pip-audit:
+    name: pip-audit (dependency CVEs)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Install poetry-plugin-export
+        # Needed to export poetry.lock → requirements.txt on the CI runner.
+        # We install Poetry first, then the export plugin.
+        run: |
+          pip install poetry
+          poetry self add poetry-plugin-export
+
+      - name: Export locked dependencies
+        # --without dev excludes test/lint deps from the CVE scan.
+        # --without-hashes keeps the file compatible with pip-audit.
+        run: |
+          poetry export \
+            -f requirements.txt \
+            --output requirements-audit.txt \
+            --without-hashes \
+            --without dev
+
+      - name: Run pip-audit
+        run: pip-audit -r requirements-audit.txt --format=columns
+
+      - name: Upload requirements snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-requirements
+          path: requirements-audit.txt
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Trivy — filesystem CVE cross-check + IaC misconfiguration scan
+  # ---------------------------------------------------------------------------
+  # Two scans in one job (share the same Trivy DB cache):
+  #   fs scan     : cross-checks pip-audit against GitHub Advisories + NVD.
+  #   config scan : checks Dockerfile and docker-compose.yml against CIS
+  #                 Docker Benchmark rules.
+  # ---------------------------------------------------------------------------
+  trivy:
+    name: Trivy (CVEs + IaC misconfigs)
+    runs-on: ubuntu-latest
+
+    permissions:
+      security-events: write  # required to upload SARIF results to GitHub Security
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-fs.sarif
+          exit-code: "1"
+
+      - name: Upload Trivy fs results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Run Trivy config scan (IaC misconfigurations)
+        uses: aquasecurity/trivy-action@0.30.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-config.sarif
+          exit-code: "1"
+
+      - name: Upload Trivy config results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+  # ---------------------------------------------------------------------------
+  # Gitleaks — secret and credential scanning
+  # ---------------------------------------------------------------------------
+  # Scans the full git history for accidentally committed secrets (API keys,
+  # tokens, private keys). Uses .gitleaks.toml to allowlist .env files, which
+  # are gitignored and the intended location for local credentials.
+  # ---------------------------------------------------------------------------
+  gitleaks:
+    name: Gitleaks (secret scanning)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          # Fetch the entire git history so gitleaks can scan all commits,
+          # not just the HEAD snapshot. Secrets deleted in a later commit
+          # are still present in the history.
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config-path: .gitleaks.toml

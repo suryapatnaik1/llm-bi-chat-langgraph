@@ -284,6 +284,53 @@ poetry add langgraph langchain-anthropic
 
 ---
 
+## Security
+
+### Security Audit
+
+Security checks run automatically on every push and pull request via [.github/workflows/security.yml](.github/workflows/security.yml), and on a weekly schedule to catch newly published CVEs.
+
+Run all four checks locally in one command:
+
+```bash
+make security-scan          # always exits 0 — for local use
+make security-scan-strict   # exits 1 on any finding — for CI pipelines
+```
+
+Results are saved to `reports/cve_audit.txt` and `reports/gitleaks.json`.
+
+**What it runs:**
+
+| Tool | Checks |
+|------|--------|
+| [`pip-audit`](https://github.com/pypa/pip-audit) | Known CVEs in all locked dependencies (from `poetry.lock`) |
+| [`bandit`](https://bandit.readthedocs.io/) | Insecure code patterns in `src/` (SQL injection, hardcoded secrets, etc.) |
+| [`gitleaks`](https://github.com/gitleaks/gitleaks) | Secrets and API keys in working tree and full git history |
+| [`trivy`](https://github.com/aquasecurity/trivy) | Dependency CVEs (cross-checks pip-audit) + Dockerfile/docker-compose IaC misconfigurations |
+
+**First-time setup** — install all tools in one command:
+
+```bash
+make security-install
+```
+
+Or manually:
+
+```bash
+brew install pipx gitleaks trivy
+pipx install pip-audit
+pipx install bandit
+```
+
+**Implementation notes:**
+- Parses `poetry.lock` directly — no `poetry export` plugin required
+- Platform-incompatible packages (e.g. `pywin32` on macOS/Linux) are automatically filtered before the CVE scan
+- Allowlisted paths (`.env` is already gitignored and expected to hold credentials) are configured in [.gitleaks.toml](.gitleaks.toml)
+- Trivy uses a 15-minute timeout to handle the ~88 MB vuln DB download on first run; the DB is cached locally on subsequent runs
+- Reports written to `reports/` (gitignored)
+
+---
+
 ## References
 
 - [LangGraph documentation](https://langchain-ai.github.io/langgraph/)

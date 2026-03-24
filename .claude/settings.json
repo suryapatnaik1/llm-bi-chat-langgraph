@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(brew install:*)",
+      "Bash(command -v trivy)",
+      "Bash(trivy --version)",
+      "Bash(trivy config:*)"
+    ]
+  }
+}

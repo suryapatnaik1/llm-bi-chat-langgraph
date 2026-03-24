@@ -1,0 +1,9 @@
+# Gitleaks configuration
+# https://github.com/gitleaks/gitleaks#configuration
+
+[allowlist]
+description = "Ignore secrets in env files (already gitignored)"
+paths = [
+    '''\.env$''',
+    '''\.env\..*$''',
+]

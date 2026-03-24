@@ -7,3 +7,4 @@ src/static/reports/*.html
 .venv/
 dist/
 *.egg-info/
+reports/

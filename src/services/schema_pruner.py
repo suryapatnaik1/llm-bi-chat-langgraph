@@ -29,6 +29,12 @@ ITEMS_HINTS: frozenset[str] = frozenset({
 _MAX_DISTINCT_FOR_VALUE_HINTS: int = 20
 _MIN_LINKED_COLS: int = 4
 _JOIN_KEYS: frozenset[str] = frozenset({"original_reference"})
+_ALLOWED_TABLES: frozenset[str] = frozenset({"orders", "order_lines", "items"})
+
+
+def _quote_identifier(name: str) -> str:
+    """Return a safely double-quoted SQL identifier (escapes embedded double quotes)."""
+    return '"' + name.replace('"', '""') + '"'
 
 
 def compute_value_hints(
@@ -37,20 +43,25 @@ def compute_value_hints(
     col_types: dict[str, str],
 ) -> dict[str, str | None]:
     """Return per-column value annotations for low-cardinality VARCHAR columns."""
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"Table '{table}' is not in the allowed list.")
+
     hints: dict[str, str | None] = {}
+    qt = _quote_identifier(table)
     for col, dtype in col_types.items():
         if not dtype.upper().startswith("VARCHAR"):
             hints[col] = None
             continue
+        qc = _quote_identifier(col)
         n_distinct = conn.execute(
-            f"SELECT COUNT(DISTINCT {col}) FROM {table}"
+            f"SELECT COUNT(DISTINCT {qc}) FROM {qt}"  # nosec B608
         ).fetchone()[0]
         if n_distinct > _MAX_DISTINCT_FOR_VALUE_HINTS:
             hints[col] = None
             continue
         vals = conn.execute(
-            f"SELECT DISTINCT {col} FROM {table} "
-            f"WHERE {col} IS NOT NULL ORDER BY {col} "
+            f"SELECT DISTINCT {qc} FROM {qt} "  # nosec B608
+            f"WHERE {qc} IS NOT NULL ORDER BY {qc} "
             f"LIMIT {_MAX_DISTINCT_FOR_VALUE_HINTS}"
         ).fetchall()
         sample = ", ".join(repr(v[0]) for v in vals)
