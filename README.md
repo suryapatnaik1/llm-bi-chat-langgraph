@@ -106,14 +106,25 @@ The routing logic lives in the graph structure, not buried in if/elif chains.
 ```python
 class BIState(MessagesState):
     """Everything the graph needs — one place, typed, checkpointed."""
+    filter_context: str = ""           # sidebar filters active when the question was asked;
+                                       # preserved across interrupt() resumes so chart SQL
+                                       # stays consistent with the data already shown
     df_json:        str | None = None
     last_sql:       str | None = None
     chart_spec:     dict | None = None
-    dashboard_html: str | None = None
+    dashboard_url:  str | None = None  # published URL (intranet / Power BI), not HTML content —
+                                       # VisualizationAgent publishes the report externally and
+                                       # stores only the reference here to keep checkpoints small
     chart_history:  list = []
 ```
 
 All agents read from and write to this single state. LangGraph checkpoints it automatically — if the app restarts, the conversation resumes exactly where it left off.
+
+**Filter change detection:** `filter_context` is written from the sidebar on every new user question. The UI compares the current sidebar value against `state.filter_context` from the checkpoint before each invoke. If they differ mid-conversation (e.g., user changed the date range while ChartAgent was waiting for an answer), the UI surfaces a prompt:
+
+> _"Filters have changed (Jan–Mar → Jan–Jun). Continue with the original filters or apply the new ones?"_
+
+The user's choice is held in `st.session_state` (not in graph state — the graph has no role in resolving the mismatch). The confirmed value is then written into `filter_context` on the next `graph.invoke()` call.
 
 ### 3. Human-in-the-loop is a first-class concept
 
@@ -153,8 +164,8 @@ LangGraph Studio shows the graph as a live map — green nodes for completed ste
 ┌─────────────────────────────────────────────────────────────┐
 │              LangGraph StateGraph (graph.py)                 │
 │                                                             │
-│  BIState = { messages, df_json, last_sql,                   │
-│              chart_spec, dashboard_html, chart_history }    │
+│  BIState = { messages, filter_context, df_json, last_sql,   │
+│              chart_spec, dashboard_url, chart_history }     │
 │                                                             │
 │  ┌──────────┐                                               │
 │  │  Router  │  (Claude classifies intent)                   │
@@ -206,7 +217,7 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 | Component | Changes? | Notes |
 |-----------|----------|-------|
 | `QueryAgent` | ✅ Kept | Becomes a LangGraph node |
-| `VisualizationAgent` | ✅ Kept | Becomes a LangGraph node |
+| `VisualizationAgent` | ⚠️ Extended | Becomes a LangGraph node; gains a publish step that pushes HTML to intranet/Power BI and writes the URL to `BIState.dashboard_url` instead of returning raw HTML |
 | `ChartAgent` | ✅ Kept | Uses `interrupt()` instead of phase flags |
 | `run_tool_loop()` | ✅ Kept | Still used inside agent nodes |
 | DuckDB MCP Server | ✅ Kept | Unchanged |
@@ -225,10 +236,12 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 - Create `src/graph/graph.py` — `StateGraph` with nodes and edges
 - Wire existing agents as node functions
 
-### Phase 2 — Replace the orchestrator
+### Phase 2 — Replace the orchestrator and extend VisualizationAgent
 - Remove `OrchestratorAgent` and `AgentRegistry`
 - Add router node (same Claude call, now returns edge name)
 - Add conditional edges for routing
+- Extend `VisualizationAgent` with a publish step: render HTML → publish to intranet/Power BI → write URL to `BIState.dashboard_url`; remove `dashboard_html` from `AgentResult`
+- **Implementation gap:** the publish target (intranet base URL, Power BI workspace ID, dataset ID, bearer token) must be supplied via environment variables or LangGraph node config — not hardcoded; the node should raise a clear error at startup if required vars are missing rather than failing silently at publish time
 
 ### Phase 3 — Replace state machine with interrupt
 - Remove `chart_pending` phases from `st.session_state`
@@ -239,11 +252,20 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 - `app.py` calls `graph.invoke()` instead of `orchestrator.query()`
 - UI reads from `BIState` instead of `result.data`, `result.text` etc.
 - Add LangGraph streaming for real-time response rendering
+- On each invoke, compare current sidebar filters against `state.filter_context` from the checkpoint; if they differ mid-conversation, prompt the user to choose between original and new filters before proceeding
 
 ### Phase 5 — Add persistence
 - Configure checkpointer (SQLite or PostgreSQL)
 - Conversations survive restarts
 - Multiple users get isolated graph instances via `thread_id`
+
+---
+
+## Architecture Decision Records
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [ADR-001](docs/adr/ADR-001-checkpointer.md) | Use `SqliteSaver` for LangGraph checkpointing | Accepted |
 
 ---
 

@@ -4,7 +4,10 @@
       "Bash(brew install:*)",
       "Bash(command -v trivy)",
       "Bash(trivy --version)",
-      "Bash(trivy config:*)"
+      "Bash(trivy config:*)",
+      "Bash(poetry install:*)",
+      "Bash(poetry env:*)",
+      "Bash(poetry run python -c \":*)"
     ]
   }
 }

@@ -8,6 +8,7 @@ packages = [
     {include = "sql", from = "src"},
     {include = "agents", from = "src"},
     {include = "services", from = "src"},
+    {include = "graph", from = "src"},
 ]
 
 [tool.poetry.dependencies]
@@ -22,6 +23,7 @@ polars = "^1.39.0"
 mcp = "^1.26.0"
 plotly = "^6.6.0"
 altair = "*"
+langgraph = ">=0.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
