@@ -44,6 +44,7 @@ class BIState(MessagesState):
         reducer so turns are never overwritten by a partial state update.
     """
 
+    intent: str = ""
     filter_context: str = ""
     df_json: str | None = None
     last_sql: str | None = None

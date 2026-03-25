@@ -28,6 +28,10 @@ langgraph = ">=0.2"
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

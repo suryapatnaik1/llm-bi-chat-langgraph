@@ -22,17 +22,18 @@ offer_plot ──────► chart_agent                      END
 
 Nodes
 -----
-router              Classifies user intent into one of four edge labels:
-                    "query" | "visualization" | "chart" | "reformat".
-                    Replaces OrchestratorAgent + the classify_intent() call
-                    in app.py. (STUB — Phase 2)
+router              Calls Claude with a brief system prompt and returns one
+                    of four edge labels: "query" | "visualization" | "chart"
+                    | "reformat". Replaces OrchestratorAgent + the
+                    classify_intent() call in app.py.
 
 query_agent         Wraps QueryAgent: text-to-SQL via MCP, returns df_json
-                    and last_sql. (STUB — Phase 2)
+                    and last_sql.
 
 visualization_agent Wraps VisualizationAgent: multi-SQL dashboard builder,
-                    publishes HTML and writes dashboard_url to state.
-                    (STUB — Phase 2)
+                    saves HTML report to disk, writes dashboard_url to state.
+                    TODO (Phase 5): replace save_report() with publish to
+                    intranet / Power BI and write the remote URL instead.
 
 offer_plot          Interrupts after query_agent when a DataFrame is present
                     to ask "Would you like to plot this?". Holds the yes/no
@@ -42,39 +43,136 @@ chart_agent         Wraps ChartAgent: multi-turn chart builder. Uses
                     interrupt() to pause and wait for user clarification when
                     it needs more information. (STUB — Phase 3)
 """
+import logging
+
+from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 
+from agents.query_agent import QueryAgent
+from agents.visualization_agent import VisualizationAgent
+from config import LLM_MODEL, get_async_client
 from graph.state import BIState
+from services.mcp_connection import MCPConnectionManager
+
+_logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level singletons — created once per process
+# ---------------------------------------------------------------------------
+
+_mcp = MCPConnectionManager()
+_query_agent = QueryAgent()
+_visualization_agent = VisualizationAgent()
+
+# ---------------------------------------------------------------------------
+# Router prompt
+# ---------------------------------------------------------------------------
+
+_ROUTER_SYSTEM = """\
+You are an intent classifier for a BI chat application.
+
+Classify the user's message into exactly one of these categories:
+- query: The user wants to fetch or analyse specific data (most common).
+- visualization: The user wants a full dashboard with multiple KPI cards and charts.
+- chart: The user explicitly wants a single chart or visualisation from scratch.
+- reformat: The user wants to change how existing query results are displayed \
+(only valid when a DataFrame from a previous query is already available).
+
+Reply with ONLY the category name — no punctuation, no explanation.
+"""
 
 
 # ---------------------------------------------------------------------------
-# Stub node functions — replaced in Phase 2 / Phase 3
+# Node functions
 # ---------------------------------------------------------------------------
 
 
-def router_node(state: BIState) -> dict:
-    """Classify user intent. Returns edge label via classify_intent().
+async def router_node(state: BIState) -> dict:
+    """Classify user intent via a lightweight Claude call.
 
-    Phase 2: replace with a Claude call that returns one of
-    "query" | "visualization" | "chart" | "reformat".
+    Writes intent into state["intent"]; classify_intent() reads it to pick
+    the next node.
     """
-    return {}
+    last_message = state["messages"][-1].content
+    has_df = bool(state.get("df_json"))
+
+    user_content = last_message
+    if has_df:
+        user_content = (
+            "[A DataFrame from a previous query is available.]\n\n" + last_message
+        )
+
+    client = get_async_client()
+    response = await client.messages.create(
+        model=LLM_MODEL,
+        max_tokens=10,
+        system=_ROUTER_SYSTEM,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    raw = response.content[0].text.strip().lower()
+    valid = {"query", "visualization", "chart", "reformat"}
+    intent = raw if raw in valid else "query"
+    # "reformat" only makes sense when there is an existing DataFrame
+    if intent == "reformat" and not has_df:
+        intent = "query"
+
+    _logger.info("router_node: intent=%r", intent)
+    return {"intent": intent}
 
 
-def query_agent_node(state: BIState) -> dict:
-    """Run QueryAgent: write SQL, execute via MCP, populate df_json / last_sql.
+async def query_agent_node(state: BIState) -> dict:
+    """Run QueryAgent: write SQL, execute via MCP, populate df_json / last_sql."""
+    question = state["messages"][-1].content
+    filter_context = state.get("filter_context", "")
 
-    Phase 2: wire in QueryAgent.run() inside an MCP session.
+    async def _run(session, schema):
+        tools = await _mcp.get_mcp_tools(session)
+        return await _query_agent.run(
+            question=question,
+            session=session,
+            schema=schema,
+            context={"filter_context": filter_context, "mcp_tools": tools},
+        )
+
+    result = await _mcp.execute_with_session(_run)
+
+    updates: dict = {"messages": [AIMessage(content=result.text)]}
+    if result.data is not None:
+        updates["df_json"] = result.data.write_json()
+    if result.last_sql:
+        updates["last_sql"] = result.last_sql
+    return updates
+
+
+async def visualization_agent_node(state: BIState) -> dict:
+    """Run VisualizationAgent: build dashboard, save to disk, write dashboard_url.
+
+    Phase 5: replace save_report() with a real publish step (intranet /
+    Power BI) and store the remote URL in dashboard_url instead.
     """
-    return {}
+    question = state["messages"][-1].content
+    filter_context = state.get("filter_context", "")
 
+    async def _run(session, schema):
+        tools = await _mcp.get_mcp_tools(session)
+        return await _visualization_agent.run(
+            question=question,
+            session=session,
+            schema=schema,
+            context={"filter_context": filter_context, "mcp_tools": tools},
+        )
 
-def visualization_agent_node(state: BIState) -> dict:
-    """Run VisualizationAgent: build dashboard, publish, write dashboard_url.
+    result = await _mcp.execute_with_session(_run)
 
-    Phase 2: wire in VisualizationAgent.run() + publish step.
-    """
-    return {}
+    updates: dict = {"messages": [AIMessage(content=result.text)]}
+    if result.dashboard_html:
+        # VisualizationAgent already calls save_report() internally; we call
+        # it again here to get the URL path for state.  TODO (Phase 5): publish
+        # to remote target and store the remote URL instead.
+        from services.dashboard_renderer import save_report
+
+        updates["dashboard_url"] = save_report(result.dashboard_html)
+    return updates
 
 
 def offer_plot_node(state: BIState) -> dict:
@@ -101,13 +199,8 @@ def chart_agent_node(state: BIState) -> dict:
 
 
 def classify_intent(state: BIState) -> str:
-    """Return the edge label chosen by router_node.
-
-    Phase 2: router_node will write the intent into state; read it here.
-    Stub returns "query" so the skeleton graph is runnable end-to-end.
-    """
-    # TODO (Phase 2): return state["intent"]
-    return "query"
+    """Return the edge label written by router_node."""
+    return state.get("intent") or "query"
 
 
 def has_dataframe(state: BIState) -> str:
@@ -171,5 +264,5 @@ _builder.add_conditional_edges(
 _builder.add_edge("visualization_agent", END)
 _builder.add_edge("chart_agent", END)
 
-# Compile without a checkpointer for Phase 1 — added in Phase 5
+# Compile without a checkpointer for Phase 1–4 — added in Phase 5
 graph = _builder.compile()
