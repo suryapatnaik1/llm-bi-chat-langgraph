@@ -241,12 +241,22 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 - Add router node (same Claude call, now returns edge name)
 - Add conditional edges for routing
 - Extend `VisualizationAgent` with a publish step: render HTML → publish to intranet/Power BI → write URL to `BIState.dashboard_url`; remove `dashboard_html` from `AgentResult`
+- Pass full `BIState.messages` (conversation history) to `query_agent_node` — not just the last message — so that drill-down and refinement queries ("same but for wholesale", "break that down by country") can resolve against prior answers
+- Update `QueryAgent` system prompt to explicitly allow multiple sequential SQL calls for diagnostic / "why" questions, not just a single query
 - **Implementation gap:** the publish target (intranet base URL, Power BI workspace ID, dataset ID, bearer token) must be supplied via environment variables or LangGraph node config — not hardcoded; the node should raise a clear error at startup if required vars are missing rather than failing silently at publish time
+
+### Phase 2.5 — Pre-Phase 3 fixes (must land first)
+- Fix `chart_history` reducer: remove `Annotated[list, operator.add]` from `state.py`, change to plain `list`, update docstring (code currently contradicts ADR-003)
+- Add three missing `BIState` fields: `plot_accepted`, `original_question`, `db_schema`
+- Fix `ChartAgent` sync deadlock: switch to `AsyncAnthropic` or wrap `respond()` in `asyncio.run_in_executor()` to avoid blocking LangGraph's event loop
+- Fix stale `df_json`: `query_agent_node` must reset `df_json = None` at the start of each run so `has_dataframe()` reflects the _current_ query, not a prior one
+- Complete Phase 2 conversation history (ADR-004): pass full `state["messages"]` to both `query_agent_node` and `visualization_agent_node`
 
 ### Phase 3 — Replace state machine with interrupt
 - Remove `chart_pending` phases from `st.session_state`
 - ChartAgent node uses `interrupt()` to pause and wait for user
 - Graph resumes from checkpoint on next user message
+- Compile graph with `MemorySaver` (swapped for `AsyncSqliteSaver` in Phase 5)
 
 ### Phase 4 — Update the UI
 - `app.py` calls `graph.invoke()` instead of `orchestrator.query()`
@@ -255,9 +265,47 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 - On each invoke, compare current sidebar filters against `state.filter_context` from the checkpoint; if they differ mid-conversation, prompt the user to choose between original and new filters before proceeding
 
 ### Phase 5 — Add persistence
-- Configure checkpointer (SQLite or PostgreSQL)
+- Configure checkpointer (`AsyncSqliteSaver` for development, `AsyncPostgresSaver` for production)
 - Conversations survive restarts
 - Multiple users get isolated graph instances via `thread_id`
+
+### Phase 6 — Scale to 100 users
+- Replace MCP subprocess with shared DuckDB connection (`src/services/duckdb_connection.py`)
+- Switch checkpointer from `AsyncSqliteSaver` to `AsyncPostgresSaver` (see ADR-001 amendment)
+- Replace Streamlit single-process with LangGraph Server (or FastAPI + multiple uvicorn workers)
+- Route router calls through `claude-haiku-4-5` to reduce token cost; agents remain on `claude-sonnet-4-6`
+
+### Phase 7 — ClickHouse migration (deferred, trigger-based)
+- Replace shared DuckDB connection with ClickHouse via `clickhouse-connect`
+- Update `QueryAgent` and `VisualizationAgent` system prompts to ClickHouse SQL dialect
+- Rewrite data load (`scripts/prepare_bi_data.py`) using `MergeTree` table engine
+- Validate all 6 interaction types and 6 multi-turn patterns (see `bi-chat-interactions.md`) against both databases in parallel before cutover
+- **Trigger:** data > 50 GB, or p95 query latency > 5 s, or horizontal app scaling required
+- See [ADR-006](docs/adr/ADR-006-clickhouse-migration-path.md) for dialect gap analysis
+
+---
+
+## Scaling to 100 Users
+
+The LangGraph migration (Phases 1–5) produces a correct, production-ready single-server app. Phase 6 addresses the four layers that become bottlenecks at 100 concurrent users:
+
+| Layer | Current (Phases 1–5) | Phase 6 target | ADR |
+|-------|---------------------|----------------|-----|
+| **Database access** | MCP subprocess per call (~200–500 ms spawn overhead) | Shared DuckDB connection (`read_only=True`, unlimited concurrent readers) | [ADR-005](docs/adr/ADR-005-direct-duckdb-connection.md) |
+| **Checkpointer** | `AsyncSqliteSaver` (file-level write lock under concurrent load) | `AsyncPostgresSaver` (row-level locking, horizontal-scalable) | [ADR-007](docs/adr/ADR-007-postgres-checkpointer.md) |
+| **App server** | Streamlit single process (shared event loop + GIL) | LangGraph Server (self-hosted, multi-worker, native SSE streaming) | [ADR-008](docs/adr/ADR-008-langgraph-server-deployment.md) |
+| **Claude API** | Both router and agent use `claude-sonnet-4-6` | Router uses `claude-haiku-4-5` (10-token classification); agents keep `claude-sonnet-4-6` | [ADR-009](docs/adr/ADR-009-model-tier-split.md) |
+
+**When to move to Phase 7 (ClickHouse):**
+
+```
+Data volume        Concurrent users    Recommendation
+─────────────────────────────────────────────────────
+< 50 GB            ≤ 100              DuckDB shared connection (Phase 6)
+< 50 GB, multi-server                 MotherDuck (managed DuckDB, zero code change)
+> 50 GB            Any                ClickHouse (Phase 7, see ADR-006)
+> 1 TB             Any                Cloud DW (Snowflake / BigQuery)
+```
 
 ---
 
@@ -265,7 +313,15 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-001](docs/adr/ADR-001-checkpointer.md) | Use `SqliteSaver` for LangGraph checkpointing | Accepted |
+| [ADR-001](docs/adr/ADR-001-checkpointer.md) | Use `SqliteSaver` for dev; `AsyncPostgresSaver` for 100-user production | Accepted (amended) |
+| [ADR-002](docs/adr/ADR-002-async-mcp-bridge.md) | Async MCP bridge pattern for LangGraph nodes | Accepted |
+| [ADR-003](docs/adr/ADR-003-chart-history-reducer.md) | `chart_history` field: plain list over `operator.add` reducer | Accepted |
+| [ADR-004](docs/adr/ADR-004-query-agent-conversation-history.md) | Pass full conversation history to QueryAgent | Accepted (pending implementation) |
+| [ADR-005](docs/adr/ADR-005-direct-duckdb-connection.md) | Replace MCP subprocess with shared DuckDB connection | Accepted (Phase 6) |
+| [ADR-006](docs/adr/ADR-006-clickhouse-migration-path.md) | ClickHouse as database for scale beyond 100 users | Accepted (deferred to Phase 7) |
+| [ADR-007](docs/adr/ADR-007-postgres-checkpointer.md) | `AsyncPostgresSaver` for production checkpointing at 100 users | Accepted (Phase 6) |
+| [ADR-008](docs/adr/ADR-008-langgraph-server-deployment.md) | LangGraph Server as deployment target for 100 concurrent users | Accepted (Phase 6) |
+| [ADR-009](docs/adr/ADR-009-model-tier-split.md) | Model tier split: `claude-haiku-4-5` for router, `claude-sonnet-4-6` for agents | Accepted (Phase 6) |
 
 ---
 
