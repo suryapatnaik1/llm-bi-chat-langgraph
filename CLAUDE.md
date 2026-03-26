@@ -49,6 +49,7 @@ docs/
     ADR-007-postgres-checkpointer.md AsyncPostgresSaver for 100-user production (Phase 6)
     ADR-008-langgraph-server-*.md    LangGraph Server deployment for 100 users (Phase 6)
     ADR-009-model-tier-split.md      haiku for router / sonnet for agents (Phase 6)
+    ADR-010-caching-strategy.md      6-layer caching: prompt cache, LRU, SQL TTL, df_json (Phases 2.5–6)
 tests/
   graph/
     test_smoke.py               15 smoke tests (structure, edge conditions, routing)
@@ -96,10 +97,10 @@ Edge conditions (pure functions, easy to test):
 |-------|--------|-------------|
 | 1 | ✅ Done | `BIState`, skeleton `StateGraph`, `langgraph` dependency |
 | 2 | ⚠️ Incomplete | `router_node`, `query_agent_node`, `visualization_agent_node` — conversation history not yet passed (G6, G7); diagnostic SQL prompt still singular (G8) |
-| 2.5 | 🔲 Pre-Phase 3 | Fix G1–G5 (chart_history reducer, BIState fields, ChartAgent async, stale df_json, docstrings) |
+| 2.5 | 🔲 Pre-Phase 3 | Fix G1–G5 + caching L1–L3: prompt cache on agent system prompts, client singleton, router LRU cache |
 | 3 | 🔲 Next | `offer_plot_node` and `chart_agent_node` using `interrupt()`; MemorySaver added |
 | 4 | 🔲 Pending | Update `app.py` to call `graph.invoke()` instead of orchestrator |
-| 5 | 🔲 Pending | Add `AsyncSqliteSaver` (dev) / `AsyncPostgresSaver` (prod) checkpointer; `thread_id` per session |
+| 5 | 🔲 Pending | Checkpointer + caching L4–L5: SQL result TTL cache, `df_json` externalisation to file |
 | 6 | 🔲 Pending | Scale to 100 users: shared DuckDB connection, `AsyncPostgresSaver`, LangGraph Server (G9 resolved) |
 | 7 | 🔲 Deferred | ClickHouse migration (trigger: data > 50 GB or p95 latency > 5 s) |
 
@@ -150,6 +151,9 @@ QueryAgent can reference prior answers in the conversation.
 - Fix G2: add `plot_accepted: str = ""`, `original_question: str = ""`, `db_schema: str = ""` to `BIState`
 - Fix G3: make ChartAgent async-safe (`AsyncAnthropic` or `run_in_executor`)
 - Fix G4: `query_agent_node` resets `df_json = None`, `last_sql = None` at start
+- **Caching L1** (ADR-010): add `cache_control: {"type": "ephemeral"}` to QueryAgent and VisualizationAgent system prompt blocks in `run_tool_loop`; refactor `run_tool_loop` to accept `system: list[dict] | str`
+- **Caching L2** (ADR-010): make `get_async_client()` a module-level singleton in `config.py`
+- **Caching L3** (ADR-010): add `_router_cache: dict` in `graph.py`; check cache before Claude call in `router_node`; key is `(message.lower().strip(), has_df)`
 
 **`offer_plot_node`**: use `interrupt("Would you like to plot this data?")`, parse
 yes/no into `state["plot_accepted"]`, update `offer_plot_answer()` to read it.
@@ -173,13 +177,20 @@ Phase 3; Phase 5 swaps it for `AsyncSqliteSaver` / `AsyncPostgresSaver`.
   prompt user to choose which filters to use
 - `OrchestratorAgent` and `AgentRegistry` can be deleted after this phase
 
-### Phase 5 — Persistence
+### Phase 5 — Persistence and advanced caching
 
 - Add `AsyncSqliteSaver` for development / `AsyncPostgresSaver` for production (see ADR-001 amendment)
 - Generate a stable `thread_id` per Streamlit session (e.g. `st.session_state`)
 - Pass `{"configurable": {"thread_id": thread_id}}` to every `graph.invoke()`
 - Conversations then survive app restarts
 - Required env var for production: `CHECKPOINT_DB_URL` (PostgreSQL connection string)
+- **Caching L4 — two-tier** (ADR-010): `src/services/query_cache.py` with:
+  - Tier A (SQL exact): `sqlglot` canonicalisation → `SHA256` key → `query_cache` PostgreSQL table; handles Claude non-determinism (same question, slightly different SQL)
+  - Tier B (semantic): embed question with `text-embedding-3-small` → `pgvector` cosine similarity at threshold 0.97 → `semantic_query_cache` table; handles cross-user similar queries without re-executing DuckDB or spending tokens
+  - `QUERY_CACHE_TTL` env var (default 3600 s); `QUERY_CACHE_SIM_THRESHOLD` env var (default 0.97)
+  - `invalidate_all()` called from `prepare_bi_data.py` after data reload
+  - Add `pgvector` extension to PostgreSQL instance; `poetry add sqlglot`
+- **Caching L5** (ADR-010): externalise `df_json` — `query_agent_node` writes DataFrame to `local_data/df_cache/<uuid>.json` and stores the path in state; `chart_agent_node` reads by path; checkpoint size drops ~95%; add 24-hour cleanup job
 
 ### Phase 6 — Scale to 100 users
 
@@ -206,6 +217,28 @@ Four changes, each with a dedicated ADR:
    `router_node` uses `ROUTER_MODEL` (`claude-haiku-4-5`); agent nodes keep
    `AGENT_MODEL` (`claude-sonnet-4-6`). Run shadow comparison before enabling
    in production (log disagreements between haiku and sonnet classifications).
+
+5. **Caching L4 promoted to PostgreSQL** ([ADR-010 amendment](docs/adr/ADR-010-caching-strategy.md)):
+   In-process SQL TTL cache (Phase 5) is invisible across workers. Phase 6
+   promotes L4 to a `query_cache` table in the existing PostgreSQL instance
+   (no new service). `query_agent_node` does an async cache lookup before
+   executing SQL; `prepare_bi_data.py` calls `TRUNCATE query_cache` after reload.
+
+6. **Caching L5 promoted to shared storage** ([ADR-010 amendment](docs/adr/ADR-010-caching-strategy.md)):
+   `df_json` files written to per-pod ephemeral disk are invisible across
+   workers. Phase 6 mounts a shared Docker volume (or S3/GCS for cloud) at
+   `local_data/df_cache/` so any worker can read a file written by any other.
+
+7. **Caching L6** ([ADR-010](docs/adr/ADR-010-caching-strategy.md)):
+   Module-level `_schema: str | None` in `duckdb_connection.py` with
+   `get_schema()` / `invalidate_schema_cache()`. Per-worker in-process is
+   acceptable — schema is fetched once at worker startup. Replaces
+   `MCPConnectionManager._schema_cache`.
+
+**Redis:** Not required in Phase 6. Add only if PostgreSQL L4 read latency
+becomes measurable under peak load, pub/sub invalidation is needed, or
+scaling exceeds 10 pods. See ADR-010 amendment for the exact triggers and
+Redis implementation sketch.
 
 ### Phase 7 — ClickHouse migration (deferred)
 

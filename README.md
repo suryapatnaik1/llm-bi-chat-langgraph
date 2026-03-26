@@ -152,44 +152,42 @@ LangGraph Studio shows the graph as a live map — green nodes for completed ste
 
 ## Target Architecture
 
+> See [diagrams.md — Diagram 1: LangGraph Graph Topology](docs/diagrams/diagrams.md) for the full interactive Mermaid version.
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Streamlit UI (app.py)                     │
-│                                                             │
-│  Sends user message → graph.invoke()                        │
-│  Renders graph state (text, charts, dashboards)             │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│              LangGraph StateGraph (graph.py)                 │
-│                                                             │
-│  BIState = { messages, filter_context, df_json, last_sql,   │
-│              chart_spec, dashboard_url, chart_history }     │
-│                                                             │
-│  ┌──────────┐                                               │
-│  │  Router  │  (Claude classifies intent)                   │
-│  └────┬─────┘                                               │
-│       │                                                     │
-│  ┌────┼──────────────┐                                      │
-│  ▼    ▼              ▼                                      │
-│ Query Visual       Chart ◄──── asks questions               │
-│ Agent Agent        Agent       until ready                  │
-│  │    │            │  ↑                                     │
-│  │    │            ▼  │                                     │
-│  │    │         Has chart-spec?                             │
-│  │    │         No → interrupt()  ← user answers            │
-│  │    │         Yes → Render Chart                          │
-│  ▼    ▼              ▼                                      │
-│  └────┴──────────────┘                                      │
-│               │                                             │
-│             END                                             │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │  MCP Layer  │
-                    │  (DuckDB)   │
-                    └─────────────┘
+START
+  │
+  ▼
+router_node  ──(haiku, L3 LRU cache)──────────────────────────┐
+  │                                                            │
+  │ query          visualization       chart / reformat        │
+  ▼                ▼                   ▼                       │
+query_agent   visualization_agent   chart_agent ◄─────────────┘
+  │           │                     │  ↑
+  │           │                     │  interrupt() ← user answers
+  ▼           │                     ▼
+has_dataframe?│                    END
+  yes → offer_plot_node
+  no  → END  │
+             │ interrupt() ← user answers
+             ▼
+          chart_agent → END
+```
+
+**BIState — single source of truth (checkpointed automatically):**
+
+```python
+class BIState(MessagesState):
+    intent:            str           # set by router_node
+    filter_context:    str           # sidebar filters at question time
+    df_json:           str | None    # last DataFrame (path in Phase 5+)
+    last_sql:          str | None    # SQL that produced df_json
+    plot_accepted:     str           # "yes"/"no" after offer_plot interrupt
+    original_question: str           # passed to chart_agent for context
+    db_schema:         str           # passed to chart_agent
+    chart_spec:        dict | None
+    dashboard_url:     str | None    # published URL (not raw HTML)
+    chart_history:     list          # plain list, reset by query_agent_node
 ```
 
 ---
@@ -212,20 +210,21 @@ LangGraph Studio shows the graph as a live map — green nodes for completed ste
 
 ## What Stays the Same
 
-LangGraph replaces the **orchestration layer** only. The specialist agents, MCP connection, and database layer are unchanged:
+LangGraph replaces the **orchestration layer** only. The specialist agents and database layer are unchanged through Phase 5:
 
 | Component | Changes? | Notes |
 |-----------|----------|-------|
-| `QueryAgent` | ✅ Kept | Becomes a LangGraph node |
-| `VisualizationAgent` | ⚠️ Extended | Becomes a LangGraph node; gains a publish step that pushes HTML to intranet/Power BI and writes the URL to `BIState.dashboard_url` instead of returning raw HTML |
-| `ChartAgent` | ✅ Kept | Uses `interrupt()` instead of phase flags |
-| `run_tool_loop()` | ✅ Kept | Still used inside agent nodes |
-| DuckDB MCP Server | ✅ Kept | Unchanged |
+| `QueryAgent` | ✅ Kept | Becomes a LangGraph node; gains full conversation history (Phase 2) |
+| `VisualizationAgent` | ⚠️ Extended | Becomes a LangGraph node; publish step writes URL to `BIState.dashboard_url` (Phase 5) |
+| `ChartAgent` | ⚠️ Extended | Uses `interrupt()` instead of phase flags (Phase 3); sync client fixed before Phase 3 |
+| `run_tool_loop()` | ⚠️ Extended | Phase 6: refactored to accept direct DuckDB callables alongside MCP session |
+| DuckDB MCP Server | ✅ Kept | Unchanged through Phase 5; bypassed in Phase 6 |
 | `_DASHBOARD_TEMPLATE` | ✅ Kept | Unchanged |
-| `MCPConnectionManager` | ✅ Kept | Unchanged |
-| `OrchestratorAgent` | ❌ Replaced | Becomes the router node + conditional edges |
-| `st.session_state` routing logic | ❌ Replaced | Becomes graph state + edge conditions |
-| Phase flags in app.py | ❌ Replaced | Becomes `interrupt()` in ChartAgent node |
+| `MCPConnectionManager` | ❌ Deleted (Phase 4) | Removed once `app.py` calls LangGraph Server directly |
+| `OrchestratorAgent` | ❌ Replaced (Phase 4) | Becomes router node + conditional edges |
+| `AgentRegistry` | ❌ Replaced (Phase 4) | Becomes LangGraph node registration |
+| `st.session_state` routing | ❌ Replaced | Becomes graph state + edge conditions |
+| Phase flags in `app.py` | ❌ Replaced | Becomes `interrupt()` in `offer_plot_node` and `chart_agent_node` |
 
 ---
 
@@ -245,12 +244,13 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 - Update `QueryAgent` system prompt to explicitly allow multiple sequential SQL calls for diagnostic / "why" questions, not just a single query
 - **Implementation gap:** the publish target (intranet base URL, Power BI workspace ID, dataset ID, bearer token) must be supplied via environment variables or LangGraph node config — not hardcoded; the node should raise a clear error at startup if required vars are missing rather than failing silently at publish time
 
-### Phase 2.5 — Pre-Phase 3 fixes (must land first)
+### Phase 2.5 — Pre-Phase 3 fixes and performance baseline
 - Fix `chart_history` reducer: remove `Annotated[list, operator.add]` from `state.py`, change to plain `list`, update docstring (code currently contradicts ADR-003)
 - Add three missing `BIState` fields: `plot_accepted`, `original_question`, `db_schema`
 - Fix `ChartAgent` sync deadlock: switch to `AsyncAnthropic` or wrap `respond()` in `asyncio.run_in_executor()` to avoid blocking LangGraph's event loop
 - Fix stale `df_json`: `query_agent_node` must reset `df_json = None` at the start of each run so `has_dataframe()` reflects the _current_ query, not a prior one
 - Complete Phase 2 conversation history (ADR-004): pass full `state["messages"]` to both `query_agent_node` and `visualization_agent_node`
+- **Caching L1–L3** (see ADR-010): Anthropic server-side prompt caching on QueryAgent and VisualizationAgent system prompts; `AsyncAnthropic` client singleton; router intent LRU cache — estimated **~$3,000–$4,000/year saving at 100-user load**
 
 ### Phase 3 — Replace state machine with interrupt
 - Remove `chart_pending` phases from `st.session_state`
@@ -264,16 +264,20 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 - Add LangGraph streaming for real-time response rendering
 - On each invoke, compare current sidebar filters against `state.filter_context` from the checkpoint; if they differ mid-conversation, prompt the user to choose between original and new filters before proceeding
 
-### Phase 5 — Add persistence
+### Phase 5 — Add persistence and advanced caching
 - Configure checkpointer (`AsyncSqliteSaver` for development, `AsyncPostgresSaver` for production)
 - Conversations survive restarts
 - Multiple users get isolated graph instances via `thread_id`
+- **Caching L4–L5** (see ADR-010): SQL result TTL cache keyed on `(sql, filter_context)` with TTL tied to data refresh schedule; externalise `df_json` to file reference to reduce checkpoint size by ~95%
 
 ### Phase 6 — Scale to 100 users
-- Replace MCP subprocess with shared DuckDB connection (`src/services/duckdb_connection.py`)
-- Switch checkpointer from `AsyncSqliteSaver` to `AsyncPostgresSaver` (see ADR-001 amendment)
-- Replace Streamlit single-process with LangGraph Server (or FastAPI + multiple uvicorn workers)
-- Route router calls through `claude-haiku-4-5` to reduce token cost; agents remain on `claude-sonnet-4-6`
+- Replace MCP subprocess with shared DuckDB connection (`src/services/duckdb_connection.py`) — see [ADR-005](docs/adr/ADR-005-direct-duckdb-connection.md)
+- Switch checkpointer from `AsyncSqliteSaver` to `AsyncPostgresSaver` — see [ADR-007](docs/adr/ADR-007-postgres-checkpointer.md)
+- Replace Streamlit single-process with LangGraph Server (self-hosted Docker, 4 async workers) — see [ADR-008](docs/adr/ADR-008-langgraph-server-deployment.md)
+- Route router calls through `claude-haiku-4-5`; agents remain on `claude-sonnet-4-6` — see [ADR-009](docs/adr/ADR-009-model-tier-split.md)
+- **Caching L4 promoted to PostgreSQL:** in-process SQL TTL cache (Phase 5) is process-local and invisible across workers; Phase 6 writes to a `query_cache` table in the shared PostgreSQL instance
+- **Caching L5 promoted to shared storage:** `df_json` files written to per-pod disk are invisible across workers; Phase 6 mounts a shared Docker volume (or S3/GCS for cloud) at `local_data/df_cache/`
+- **Caching L6:** module-level `_schema` in `duckdb_connection.py` — fetched once per worker at startup; replaces `MCPConnectionManager._schema_cache`
 
 ### Phase 7 — ClickHouse migration (deferred, trigger-based)
 - Replace shared DuckDB connection with ClickHouse via `clickhouse-connect`
@@ -287,7 +291,7 @@ LangGraph replaces the **orchestration layer** only. The specialist agents, MCP 
 
 ## Scaling to 100 Users
 
-The LangGraph migration (Phases 1–5) produces a correct, production-ready single-server app. Phase 6 addresses the four layers that become bottlenecks at 100 concurrent users:
+The LangGraph migration (Phases 1–5) produces a correct, production-ready single-server app. Phase 6 addresses the layers that become bottlenecks at 100 concurrent users. See [Diagram 2 (End-to-End Flow)](docs/diagrams/diagrams.md#2-end-to-end-request-flow-phase-6), [Diagram 8 (Deployment Architecture)](docs/diagrams/diagrams.md#8-phase-6-deployment-architecture), and [Diagram 9 (Caching)](docs/diagrams/diagrams.md#9-multi-layer-caching-strategy).
 
 | Layer | Current (Phases 1–5) | Phase 6 target | ADR |
 |-------|---------------------|----------------|-----|
@@ -309,6 +313,33 @@ Data volume        Concurrent users    Recommendation
 
 ---
 
+## Architecture Diagrams
+
+All diagrams are in [diagrams.md](docs/diagrams/diagrams.md) as Mermaid (renders in GitHub and most Markdown viewers).
+
+| # | Diagram | Type |
+|---|---------|------|
+| **Architecture Overview** | | |
+| 1 | [LangGraph Graph Topology](docs/diagrams/diagrams.md#1-langgraph-graph-topology) | Flowchart — primary architecture |
+| 2 | [End-to-End Request Flow (Phase 6)](docs/diagrams/diagrams.md#2-end-to-end-request-flow-phase-6) | Sequence — all layers in one turn |
+| **Phase 3: Human-in-the-Loop** | | |
+| 3 | [interrupt() Flow](docs/diagrams/diagrams.md#3-phase-3-human-in-the-loop-with-interrupt) | Sequence — pause/resume pattern |
+| 4 | [LLM-Driven Conversational Chart](docs/diagrams/diagrams.md#4-llm-driven-conversational-chart-generation) | Flowchart + Sequence |
+| **Internal Mechanics** | | |
+| 5 | [Agent Loop — run_tool_loop()](docs/diagrams/diagrams.md#5-agent-loop-detail--run_tool_loop) | Flowchart |
+| 6 | [Dashboard Rendering Pipeline](docs/diagrams/diagrams.md#6-dashboard-rendering-pipeline) | Flowchart |
+| 7 | [Schema Pruning Pipeline](docs/diagrams/diagrams.md#7-schema-pruning-pipeline) | Flowchart |
+| **Phase 6: Scale & Operations** | | |
+| 8 | [Deployment Architecture](docs/diagrams/diagrams.md#8-phase-6-deployment-architecture) | Flowchart — Docker Compose |
+| 9 | [Multi-Layer Caching Strategy](docs/diagrams/diagrams.md#9-multi-layer-caching-strategy) | Flowchart — 6 layers |
+| 10 | [Model Tier Split](docs/diagrams/diagrams.md#10-model-tier-split) | Flowchart |
+| 11 | [Checkpointer Evolution](docs/diagrams/diagrams.md#11-checkpointer-evolution) | Flowchart |
+| **Legacy Reference** | | |
+| 12 | [Pre-LangGraph: Agent Routing](docs/diagrams/diagrams.md#12-pre-langgraph-agent-routing-legacy) | Sequence |
+| 13 | [Pre-LangGraph: State Machine](docs/diagrams/diagrams.md#13-pre-langgraph-charting-state-machine-legacy) | State diagram |
+
+---
+
 ## Architecture Decision Records
 
 | ADR | Title | Status |
@@ -322,6 +353,7 @@ Data volume        Concurrent users    Recommendation
 | [ADR-007](docs/adr/ADR-007-postgres-checkpointer.md) | `AsyncPostgresSaver` for production checkpointing at 100 users | Accepted (Phase 6) |
 | [ADR-008](docs/adr/ADR-008-langgraph-server-deployment.md) | LangGraph Server as deployment target for 100 concurrent users | Accepted (Phase 6) |
 | [ADR-009](docs/adr/ADR-009-model-tier-split.md) | Model tier split: `claude-haiku-4-5` for router, `claude-sonnet-4-6` for agents | Accepted (Phase 6) |
+| [ADR-010](docs/adr/ADR-010-caching-strategy.md) | Multi-layer caching: prompt cache, client singleton, router LRU, SQL TTL, df_json externalisation | Accepted (L1–L3 Phase 2.5; L4–L5 Phase 5; L6 Phase 6) |
 
 ---
 

@@ -2,6 +2,8 @@
 
 **Status:** Accepted (Phase 6)
 
+> **Diagram:** [diagrams.md — Diagram 10: Model Tier Split](../diagrams/diagrams.md#10-model-tier-split) · [Diagram 1: LangGraph Graph Topology](../diagrams/diagrams.md#1-langgraph-graph-topology)
+
 ## Context
 
 Every user turn makes two Claude API calls:

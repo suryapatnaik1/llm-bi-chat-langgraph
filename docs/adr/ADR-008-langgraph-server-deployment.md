@@ -2,6 +2,8 @@
 
 **Status:** Accepted (Phase 6)
 
+> **Diagram:** [diagrams.md — Diagram 8: Phase 6 Deployment Architecture](../diagrams/diagrams.md#8-phase-6-deployment-architecture) · [Diagram 2: End-to-End Request Flow](../diagrams/diagrams.md#2-end-to-end-request-flow-phase-6)
+
 ## Context
 
 The app is currently deployed as a Streamlit application (`src/app.py`). Streamlit

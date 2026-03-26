@@ -2,6 +2,8 @@
 
 **Status:** Accepted (Phase 6)
 
+> **Diagram:** [diagrams.md — Diagram 11: Checkpointer Evolution](../diagrams/diagrams.md#11-checkpointer-evolution) · [Diagram 8: Phase 6 Deployment Architecture](../diagrams/diagrams.md#8-phase-6-deployment-architecture)
+
 ## Context
 
 ADR-001 chose `SqliteSaver` for LangGraph checkpointing and noted: "Upgrading to

@@ -2,6 +2,8 @@
 
 **Status:** Accepted (Phase 6)
 
+> **Diagram:** [diagrams.md — Diagram 5: Agent Loop (run_tool_loop)](../diagrams/diagrams.md#5-agent-loop-detail--run_tool_loop) · [Diagram 8: Phase 6 Deployment Architecture](../diagrams/diagrams.md#8-phase-6-deployment-architecture)
+
 ## Context
 
 `query_agent_node` and `visualization_agent_node` currently access DuckDB by

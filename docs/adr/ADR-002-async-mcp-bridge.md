@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 
+> **Diagram:** [diagrams.md — Diagram 12: Pre-LangGraph Agent Routing (Legacy)](../diagrams/diagrams.md#12-pre-langgraph-agent-routing-legacy) · [Diagram 5: Agent Loop](../diagrams/diagrams.md#5-agent-loop-detail--run_tool_loop)
+
 ## Context
 
 `MCPConnectionManager` was written to bridge **synchronous Streamlit** with
