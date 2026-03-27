@@ -67,7 +67,7 @@ flowchart TD
 Complete sequence for a SQL query request in the Phase 6 multi-worker deployment. Shows how all layers — routing, caching, agents, DuckDB, checkpointing, and streaming — interact on a single user turn.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'actorTextColor': '#000000', 'noteTextColor': '#000000', 'loopTextColor': '#000000', 'labelTextColor': '#000000', 'actorBkg': '#ffffff', 'actorBorder': '#333333'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'background': '#1e293b', 'primaryColor': '#1e3a5f', 'primaryTextColor': '#f1f5f9', 'primaryBorderColor': '#60a5fa', 'lineColor': '#94a3b8', 'actorBkg': '#1e3a5f', 'actorTextColor': '#f1f5f9', 'actorBorder': '#60a5fa', 'actorLineColor': '#94a3b8', 'signalColor': '#94a3b8', 'signalTextColor': '#f1f5f9', 'labelBoxBkgColor': '#0f172a', 'labelBoxBorderColor': '#60a5fa', 'labelTextColor': '#f1f5f9', 'loopTextColor': '#f1f5f9', 'noteBorderColor': '#fbbf24', 'noteBkgColor': '#0f172a', 'noteTextColor': '#fde68a', 'activationBorderColor': '#60a5fa', 'activationBkgColor': '#1e3a5f', 'sequenceNumberColor': '#f1f5f9'}}}%%
 sequenceDiagram
     actor User
     participant SL as Streamlit UI
@@ -83,7 +83,7 @@ sequenceDiagram
     LGS->>PG: Load checkpoint (thread_id) — BIState restore
     PG-->>LGS: BIState (conversation history, filter_context)
 
-    rect rgb(254, 243, 199)
+    rect rgb(78, 52, 10)
         Note over RN: router_node — Haiku classification
         LGS->>RN: BIState
         RN->>RN: Check L3 LRU cache (message, has_df)
@@ -96,7 +96,7 @@ sequenceDiagram
         RN->>PG: Checkpoint (intent="query")
     end
 
-    rect rgb(224, 231, 255)
+    rect rgb(26, 35, 90)
         Note over QA: query_agent_node — Sonnet + DuckDB
         LGS->>QA: BIState
         QA->>QA: Reset df_json=None, last_sql=None
@@ -135,7 +135,7 @@ sequenceDiagram
 LangGraph's `interrupt()` pauses the graph mid-execution and persists all state to the checkpointer. The UI resumes the graph on the next user message using `Command(resume=...)`.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'actorTextColor': '#000000', 'noteTextColor': '#000000', 'loopTextColor': '#000000', 'labelTextColor': '#000000', 'actorBkg': '#ffffff', 'actorBorder': '#333333'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'background': '#1e293b', 'primaryColor': '#1e3a5f', 'primaryTextColor': '#f1f5f9', 'primaryBorderColor': '#60a5fa', 'lineColor': '#94a3b8', 'actorBkg': '#1e3a5f', 'actorTextColor': '#f1f5f9', 'actorBorder': '#60a5fa', 'actorLineColor': '#94a3b8', 'signalColor': '#94a3b8', 'signalTextColor': '#f1f5f9', 'labelBoxBkgColor': '#0f172a', 'labelBoxBorderColor': '#60a5fa', 'labelTextColor': '#f1f5f9', 'loopTextColor': '#f1f5f9', 'noteBorderColor': '#fbbf24', 'noteBkgColor': '#0f172a', 'noteTextColor': '#fde68a', 'activationBorderColor': '#60a5fa', 'activationBkgColor': '#1e3a5f', 'sequenceNumberColor': '#f1f5f9'}}}%%
 sequenceDiagram
     actor User
     participant SL as Streamlit UI
@@ -244,7 +244,7 @@ flowchart TD
 ### Multi-Turn Sequence
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'actorTextColor': '#000000', 'noteTextColor': '#000000', 'loopTextColor': '#000000', 'labelTextColor': '#000000', 'actorBkg': '#ffffff', 'actorBorder': '#333333'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'background': '#1e293b', 'primaryColor': '#1e3a5f', 'primaryTextColor': '#f1f5f9', 'primaryBorderColor': '#60a5fa', 'lineColor': '#94a3b8', 'actorBkg': '#1e3a5f', 'actorTextColor': '#f1f5f9', 'actorBorder': '#60a5fa', 'actorLineColor': '#94a3b8', 'signalColor': '#94a3b8', 'signalTextColor': '#f1f5f9', 'labelBoxBkgColor': '#0f172a', 'labelBoxBorderColor': '#60a5fa', 'labelTextColor': '#f1f5f9', 'loopTextColor': '#f1f5f9', 'noteBorderColor': '#fbbf24', 'noteBkgColor': '#0f172a', 'noteTextColor': '#fde68a', 'activationBorderColor': '#60a5fa', 'activationBkgColor': '#1e3a5f', 'sequenceNumberColor': '#f1f5f9'}}}%%
 sequenceDiagram
     participant U as User
     participant UI as Streamlit
@@ -584,7 +584,7 @@ flowchart LR
 > **Note:** This diagram shows the **pre-migration architecture** (the hand-built orchestrator in `llm-bi-chat-agentic`). The `OrchestratorAgent` and `AgentRegistry` are replaced by the LangGraph `StateGraph` (see Diagram 1). Kept here as a reference for the migration delta.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': {'actorTextColor': '#000000', 'noteTextColor': '#000000', 'loopTextColor': '#000000', 'labelTextColor': '#000000', 'actorBkg': '#ffffff', 'actorBorder': '#333333'}}}%%
+%%{init: {'theme': 'base', 'themeVariables': {'background': '#1e293b', 'primaryColor': '#1e3a5f', 'primaryTextColor': '#f1f5f9', 'primaryBorderColor': '#60a5fa', 'lineColor': '#94a3b8', 'actorBkg': '#1e3a5f', 'actorTextColor': '#f1f5f9', 'actorBorder': '#60a5fa', 'actorLineColor': '#94a3b8', 'signalColor': '#94a3b8', 'signalTextColor': '#f1f5f9', 'labelBoxBkgColor': '#0f172a', 'labelBoxBorderColor': '#60a5fa', 'labelTextColor': '#f1f5f9', 'loopTextColor': '#f1f5f9', 'noteBorderColor': '#fbbf24', 'noteBkgColor': '#0f172a', 'noteTextColor': '#fde68a', 'activationBorderColor': '#60a5fa', 'activationBkgColor': '#1e3a5f', 'sequenceNumberColor': '#f1f5f9'}}}%%
 sequenceDiagram
     actor User
     participant UI as Streamlit UI<br/>(app.py)
@@ -607,7 +607,7 @@ sequenceDiagram
     DB-->>MCP: DDL schema
     MCP-->>Orch: Schema text (cached)
 
-    rect rgb(240, 245, 255)
+    rect rgb(18, 40, 80)
         Note over Orch,Claude: Routing — single Claude call
         Orch->>Claude: messages + router tools<br/>[query_agent, visualization_agent]
         Claude-->>Orch: tool_use: query_agent<br/>{ question: "..." }
@@ -615,7 +615,7 @@ sequenceDiagram
 
     Orch->>Agent: agent.run(question, session, schema, context)
 
-    rect rgb(240, 255, 240)
+    rect rgb(15, 55, 35)
         Note over Agent,DB: Agent Loop — run_tool_loop()
         Agent->>Claude: System prompt + MCP tools + question
         Claude-->>Agent: tool_use: execute_sql<br/>{ sql: "SELECT ..." }
