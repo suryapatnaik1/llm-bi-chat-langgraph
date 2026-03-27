@@ -45,11 +45,11 @@ flowchart TD
     VA --> E3([END])
     CA --> E4([END])
 
-    style RN fill:#fef3c7,stroke:#f59e0b
-    style QA fill:#e0e7ff,stroke:#6366f1
-    style VA fill:#e0e7ff,stroke:#6366f1
-    style CA fill:#e0e7ff,stroke:#6366f1
-    style OP fill:#fce7f3,stroke:#ec4899
+    style RN fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style QA fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style VA fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style CA fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style OP fill:#fce7f3,stroke:#ec4899,color:#000000
 ```
 
 **Edge condition functions (pure, unit-testable):**
@@ -67,6 +67,7 @@ flowchart TD
 Complete sequence for a SQL query request in the Phase 6 multi-worker deployment. Shows how all layers — routing, caching, agents, DuckDB, checkpointing, and streaming — interact on a single user turn.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'actorTextColor': '#000000', 'noteTextColor': '#000000', 'loopTextColor': '#000000', 'labelTextColor': '#000000', 'actorBkg': '#ffffff', 'actorBorder': '#333333'}}}%%
 sequenceDiagram
     actor User
     participant SL as Streamlit UI
@@ -134,6 +135,7 @@ sequenceDiagram
 LangGraph's `interrupt()` pauses the graph mid-execution and persists all state to the checkpointer. The UI resumes the graph on the next user message using `Command(resume=...)`.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'actorTextColor': '#000000', 'noteTextColor': '#000000', 'loopTextColor': '#000000', 'labelTextColor': '#000000', 'actorBkg': '#ffffff', 'actorBorder': '#333333'}}}%%
 sequenceDiagram
     actor User
     participant SL as Streamlit UI
@@ -233,15 +235,16 @@ flowchart TD
     O -->|Yes| F
     O -->|No| Z
 
-    style E fill:#e0e7ff,stroke:#6366f1
-    style F fill:#fef3c7,stroke:#f59e0b
-    style K fill:#d1fae5,stroke:#10b981
-    style N fill:#d1fae5,stroke:#10b981
+    style E fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style F fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style K fill:#d1fae5,stroke:#10b981,color:#000000
+    style N fill:#d1fae5,stroke:#10b981,color:#000000
 ```
 
 ### Multi-Turn Sequence
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'actorTextColor': '#000000', 'noteTextColor': '#000000', 'loopTextColor': '#000000', 'labelTextColor': '#000000', 'actorBkg': '#ffffff', 'actorBorder': '#333333'}}}%%
 sequenceDiagram
     participant U as User
     participant UI as Streamlit
@@ -297,8 +300,8 @@ flowchart LR
     CA2 -->|"updated chart_history"| CH
     CA2 -->|"chart_spec"| RENDER["Plotly render<br/>inline in chat"]
 
-    style CA2 fill:#e0e7ff,stroke:#6366f1
-    style RENDER fill:#d1fae5,stroke:#10b981
+    style CA2 fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style RENDER fill:#d1fae5,stroke:#10b981,color:#000000
 ```
 
 ### Key Differences: State Machine vs LLM-Driven
@@ -341,10 +344,10 @@ flowchart TD
     ReturnText --> Exit([Back to caller])
     ReturnError --> Exit
 
-    style Entry fill:#e0e7ff,stroke:#6366f1
-    style Exit fill:#d1fae5,stroke:#10b981
-    style CallClaude fill:#fef3c7,stroke:#f59e0b
-    style ExecTool fill:#fee2e2,stroke:#ef4444
+    style Entry fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style Exit fill:#d1fae5,stroke:#10b981,color:#000000
+    style CallClaude fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style ExecTool fill:#fee2e2,stroke:#ef4444,color:#000000
 ```
 
 **Phase 6 migration note:** `run_tool_loop` currently calls `session.call_tool()` on the MCP `ClientSession`. The direct DuckDB migration (ADR-005) requires one of: (a) refactoring `run_tool_loop` to accept a callable dict, (b) a thin `ClientSession` adapter over direct DuckDB, or (c) two separate tool loops. See G9 in CLAUDE.md for the full gap analysis.
@@ -366,11 +369,11 @@ flowchart LR
     EP -->|"dashboard_url"| BIS["BIState.dashboard_url<br/>(URL only — not raw HTML)"]
     BIS --> G5["Phase 5+ button<br/>opens published URL"]
 
-    style A fill:#e0e7ff,stroke:#6366f1
-    style D fill:#fef3c7,stroke:#f59e0b
-    style G fill:#d1fae5,stroke:#10b981
-    style EP fill:#fce7f3,stroke:#ec4899
-    style G5 fill:#d1fae5,stroke:#10b981
+    style A fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style D fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style G fill:#d1fae5,stroke:#10b981,color:#000000
+    style EP fill:#fce7f3,stroke:#ec4899,color:#000000
+    style G5 fill:#d1fae5,stroke:#10b981,color:#000000
 ```
 
 **Phase 5 note:** `visualization_agent_node` currently calls `save_report()` twice — once inside `VisualizationAgent.run()` and once in the node itself. Phase 5 consolidates this into a single `publish_report()` call that writes the URL directly to `BIState.dashboard_url`.
@@ -390,9 +393,9 @@ flowchart LR
 
     T3 --> S[Pruned schema DDL<br/>sent to agent]
 
-    style T1 fill:#fef3c7,stroke:#f59e0b
-    style T2 fill:#fef3c7,stroke:#f59e0b
-    style T3 fill:#fef3c7,stroke:#f59e0b
+    style T1 fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style T2 fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style T3 fill:#fef3c7,stroke:#f59e0b,color:#000000
 ```
 
 ---
@@ -437,10 +440,10 @@ flowchart TD
         DDB["DuckDB bi.db<br/>read_only=True<br/>Shared via Docker volume<br/>Unlimited concurrent readers (MVCC)"]
     end
 
-    style SL fill:#e0e7ff,stroke:#6366f1
-    style LGS fill:#fef3c7,stroke:#f59e0b
-    style PG fill:#d1fae5,stroke:#10b981
-    style DDB fill:#fee2e2,stroke:#ef4444
+    style SL fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style LGS fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style PG fill:#d1fae5,stroke:#10b981,color:#000000
+    style DDB fill:#fee2e2,stroke:#ef4444,color:#000000
 ```
 
 ---
@@ -490,12 +493,12 @@ flowchart TD
     L3 -->|"any intent"| L6
     AC --> L6
 
-    style L1 fill:#fef3c7,stroke:#f59e0b
-    style L3 fill:#e0e7ff,stroke:#6366f1
-    style L4A fill:#d1fae5,stroke:#10b981
-    style L4B fill:#d1fae5,stroke:#10b981
-    style L5 fill:#fce7f3,stroke:#ec4899
-    style L6 fill:#fee2e2,stroke:#ef4444
+    style L1 fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style L3 fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style L4A fill:#d1fae5,stroke:#10b981,color:#000000
+    style L4B fill:#d1fae5,stroke:#10b981,color:#000000
+    style L5 fill:#fce7f3,stroke:#ec4899,color:#000000
+    style L6 fill:#fee2e2,stroke:#ef4444,color:#000000
 ```
 
 **Phase activation:**
@@ -536,9 +539,9 @@ flowchart LR
     RN -.->|"env: ROUTER_MODEL"| RM["config.py<br/>ROUTER_MODEL = claude-haiku-4-5-20251001<br/>AGENT_MODEL  = claude-sonnet-4-6"]
     AN -.->|"env: AGENT_MODEL"| RM
 
-    style RN fill:#fef3c7,stroke:#f59e0b
-    style AN fill:#e0e7ff,stroke:#6366f1
-    style RM fill:#f3f4f6,stroke:#9ca3af
+    style RN fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style AN fill:#e0e7ff,stroke:#6366f1,color:#000000
+    style RM fill:#f3f4f6,stroke:#9ca3af,color:#000000
 ```
 
 ---
@@ -568,10 +571,10 @@ flowchart LR
     P6P -.-> GC
     P6D -.-> GC
 
-    style P3 fill:#fee2e2,stroke:#ef4444
-    style P5 fill:#fef3c7,stroke:#f59e0b
-    style P6P fill:#d1fae5,stroke:#10b981
-    style P6D fill:#e0e7ff,stroke:#6366f1
+    style P3 fill:#fee2e2,stroke:#ef4444,color:#000000
+    style P5 fill:#fef3c7,stroke:#f59e0b,color:#000000
+    style P6P fill:#d1fae5,stroke:#10b981,color:#000000
+    style P6D fill:#e0e7ff,stroke:#6366f1,color:#000000
 ```
 
 ---
@@ -581,6 +584,7 @@ flowchart LR
 > **Note:** This diagram shows the **pre-migration architecture** (the hand-built orchestrator in `llm-bi-chat-agentic`). The `OrchestratorAgent` and `AgentRegistry` are replaced by the LangGraph `StateGraph` (see Diagram 1). Kept here as a reference for the migration delta.
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'actorTextColor': '#000000', 'noteTextColor': '#000000', 'loopTextColor': '#000000', 'labelTextColor': '#000000', 'actorBkg': '#ffffff', 'actorBorder': '#333333'}}}%%
 sequenceDiagram
     actor User
     participant UI as Streamlit UI<br/>(app.py)
